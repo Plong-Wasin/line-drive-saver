@@ -20,52 +20,77 @@ function publishConfig() {
 }
 function doPost(e) {
     const jsonRequest = JSON.parse(e.postData.contents);
-    const replyToken = jsonRequest.events[0].replyToken;
     const event = jsonRequest.events[0];
-    const messageType = event.message.type;
-    const userId = event.source.userId;
-    const groupId = event.source.groupId;
-    const newGroupId = groupId ?? userId;
+    const messageType = getMessageType(event);
+    const newGroupId = getGroupId(event) ?? getUserId(event);
     if (["image", "file"].includes(messageType)) {
-        const groupFolder = createFolderIfNotExists(
-            newGroupId,
-            getCurrentFolder().getId()
-        );
-        const typeFolder = createFolderIfNotExists(
-            messageType,
-            groupFolder.getId()
-        );
-        const messageId = event.message.id;
-        const fileName = event.message.fileName;
-        const newFileName = fileName
-            ? `${messageId}_${fileName}`
-            : `${messageId}.jpg`;
-        log(
-            "Save file",
-            `${userId} save file to ${newGroupId}/${typeFolder}/${newFileName}`
-        );
-        // save file
-        typeFolder
-            .createFile(fetchFile(messageId).getBlob())
-            .setName(newFileName);
+        saveFile(event);
     } else if (
         messageType == "text" &&
-        event.message.text === getConfigValue("COMMAND_GET_LINK")
+        event.message.text === getConfigValue("COMMAND_GET_LINK", newGroupId)
     ) {
-        const isGroupFolderExists = getCurrentFolder()
-            .getFoldersByName(newGroupId)
-            .hasNext();
-        if (isGroupFolderExists) {
-            const groupFolder = getCurrentFolder()
-                .getFoldersByName(newGroupId)
-                .next();
-            setFolderAccessToAnyone(groupFolder.getId());
-            log("Get link", `${userId} Get link ${newGroupId}`);
-            sendMsg(replyToken, groupFolder.getUrl());
-        } else {
-            log("Get link failed", `${userId} Get link failed ${newGroupId}`);
-            sendMsg(replyToken, "No file found");
-        }
+        getLink(event);
+    }
+}
+
+function getMessageType(event: any) {
+    return event.message.type;
+}
+
+function getGroupId(event: any) {
+    return event.source.groupId;
+}
+
+function getUserId(event: any) {
+    return event.source.userId;
+}
+
+function saveFile(event) {
+    const groupId = getGroupId(event);
+    const userId = getUserId(event);
+    const groupFolder = createFolderIfNotExists(
+        groupId ?? userId,
+        getCurrentFolder().getId()
+    );
+    const messageType = getMessageType(event);
+    const typeFolder = createFolderIfNotExists(
+        messageType,
+        groupFolder.getId()
+    );
+    const messageId = event.message.id;
+    const fileName = event.message.fileName;
+    const timestamp = event.timestamp;
+    const newFileName = fileName
+        ? `${timestamp}_${fileName}`
+        : `${timestamp}.jpg`;
+    log(
+        "Save file",
+        `${userId} save file to ${
+            groupId ?? userId
+        }/${typeFolder}/${newFileName}`
+    );
+    // save file
+    typeFolder.createFile(fetchFile(messageId).getBlob()).setName(newFileName);
+}
+
+function getLink(event) {
+    const userId = getUserId(event);
+    const groupId = getGroupId(event);
+    const newGroupId = groupId ?? userId;
+    const replyToken = event.replyToken;
+    const isGroupFolderExists = getCurrentFolder()
+        .getFoldersByName(newGroupId)
+        .hasNext();
+    if (isGroupFolderExists) {
+        const groupFolder = getCurrentFolder()
+            .getFoldersByName(groupId ?? userId)
+            .next();
+        setFolderAccessToAnyone(groupFolder.getId());
+        log("Get link", `${userId} Get link ${newGroupId}`);
+        sendMsg(replyToken, groupFolder.getUrl());
+    } else {
+        log("Get link failed", `${userId} Get link failed ${newGroupId}`);
+        sendMsg(replyToken, "No file found");
     }
 }
 function checkFolderExists(folderName: string, parentFolderId: string) {
