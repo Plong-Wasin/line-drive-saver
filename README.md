@@ -1,8 +1,8 @@
-# Line bot Geb file
+# Line bot save file
 
 ## About
 
-This is a line bot that can be save files to google drive.
+This is a line bot that can save the file to the Google Drive.
 
 ## How to use
 
