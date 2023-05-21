@@ -67,7 +67,10 @@ function run(jsonRequest) {
     } else if (messageType === "text") {
         const messageText = event.message.text;
         const userId = getUserId(event);
-        if (messageText === getConfigValue("COMMAND_GET_LINK", selectedId)) {
+        if (
+            getConfigValue("ALLOW_GET_LINK", userId) &&
+            messageText === getConfigValue("COMMAND_GET_LINK", selectedId)
+        ) {
             getLink(event);
         } else if (
             messageText === getConfigValue("COMMAND_GET_GROUP_ID", selectedId)

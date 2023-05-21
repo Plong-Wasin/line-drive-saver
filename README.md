@@ -9,7 +9,6 @@ LineDrive Saver is a Line bot that allows you to save files to Google Drive.
 1. **Line Developer Account**: Line Developer Account is required to create and manage your Line bot. You can sign up for a Line Developer Account at [Line Developers website](https://developers.line.biz/en/). Once you have an account, you'll be able to create a Line channel for your bot and obtain the Line channel access token.
 2. **Google Account**: A Google Account is required to access Google Drive and save files. If you don't have a Google Account, you can create one at [Google Account Creation](https://accounts.google.com/signup). LineDrive Saver utilizes the Google Drive API to interact with Google Drive, and a Google Account provides the necessary authentication and access permissions to perform file operations.
 
-
 ## Features
 
 - Save audio, images, videos, and files to Google Drive.
