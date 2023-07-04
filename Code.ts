@@ -4,6 +4,7 @@ interface Config {
     SAVE_VIDEO: boolean;
     SAVE_AUDIO: boolean;
     SAVE_FILE: boolean;
+    SAVE_MESSAGE: boolean;
     ALLOW_GET_LINK: boolean;
     ALLOW_OVERWRITE: boolean;
     COMMAND_GET_LINK: string;
@@ -119,7 +120,6 @@ function run() {
         saveFile();
     } else if (messageType === "text" && messageText) {
         const userId = getUserId();
-        writeMessageLog();
         if (
             getConfigValue("ALLOW_GET_LINK", userId) &&
             messageText === getConfigValue("COMMAND_GET_LINK", selectedId)
@@ -168,6 +168,9 @@ function run() {
                 );
             }
         }
+        if (getConfigValue("SAVE_MESSAGE", selectedId)) {
+            writeMessageLog();
+        }
     }
 }
 
@@ -206,11 +209,9 @@ function writeMessageLog() {
     // get displayName from userId
     const userId = getUserId();
     let displayName = "";
-    for (const row of userSheet
-        .getRange(2, 1, userSheet.getLastRow(), 1)
-        .getValues()) {
-        if (row[0] == userId) {
-            displayName = row[1];
+    for (let i = 1; i <= userSheet.getLastRow(); i++) {
+        if (userSheet.getRange(i, 1).getValue() === userId) {
+            displayName = userSheet.getRange(i, 2).getValue();
             break;
         }
     }
@@ -479,6 +480,7 @@ function defaultConfig(): Config {
         SAVE_VIDEO: true,
         SAVE_AUDIO: true,
         SAVE_FILE: true,
+        SAVE_MESSAGE: true,
         ALLOW_GET_LINK: true,
         ALLOW_OVERWRITE: true,
         COMMAND_GET_LINK: "!link",
