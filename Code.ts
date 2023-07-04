@@ -4,6 +4,7 @@ interface Config {
     SAVE_VIDEO: boolean;
     SAVE_AUDIO: boolean;
     SAVE_FILE: boolean;
+    SAVE_MESSAGE: boolean;
     ALLOW_GET_LINK: boolean;
     ALLOW_OVERWRITE: boolean;
     COMMAND_GET_LINK: string;
@@ -18,8 +19,56 @@ interface Config {
     IS_LOG_REQUEST?: boolean;
     TEST_PAYLOAD?: string;
 }
+export interface JsonRequest {
+    destination: string;
+    events: ChatEvent[];
+}
+
+export interface ChatEvent {
+    type: string;
+    message: Message;
+    webhookEventId: string;
+    deliveryContext: DeliveryContext;
+    timestamp: number;
+    source: Source;
+    replyToken: string;
+    mode: string;
+}
+
+export interface DeliveryContext {
+    isRedelivery: boolean;
+}
+
+export interface Message {
+    type: string;
+    id: string;
+    text?: string;
+    fileName?: string;
+    fileSize?: number;
+    contentProvider?: ContentProvider;
+    duration?: number;
+}
+
+export interface ContentProvider {
+    type: string;
+}
+
+export interface Source {
+    type: string;
+    groupId: string;
+    userId: string;
+}
+
+export interface LineUser {
+    userId: string;
+    displayName: string;
+    pictureUrl: string;
+    language: string;
+}
 
 const LINE_CHANNEL_ACCESS_TOKEN = getConfigValue("LINE_CHANNEL_ACCESS_TOKEN");
+let jsonRequest: JsonRequest;
+let lineUser: LineUser;
 function publishConfig() {
     const sheet = createSheetIfNotExists("Global Config");
     createSheetIfNotExists("Group Config");
@@ -40,19 +89,23 @@ function publishConfig() {
     }
 }
 function doPost(e) {
-    const jsonRequest = JSON.parse(e.postData.contents);
+    jsonRequest = JSON.parse(e.postData.contents);
     if (getConfigValue("IS_LOG_REQUEST")) {
         log("Event", e.postData.contents);
     }
-    run(jsonRequest);
+    run();
 }
 function test() {
-    run(JSON.parse(getConfigValue("TEST_PAYLOAD")));
+    jsonRequest = JSON.parse(getConfigValue("TEST_PAYLOAD"));
+    run();
 }
-function run(jsonRequest) {
-    const event = jsonRequest.events[0];
-    const messageType = getMessageType(event);
-    const selectedId = getGroupId(event) ?? getUserId(event);
+function getEvent() {
+    return jsonRequest.events[0];
+}
+function run() {
+    const event = getEvent();
+    const messageType = getMessageType();
+    const selectedId = getSelectedId();
     const saveTypes = {
         image: getConfigValue("SAVE_IMAGE", selectedId),
         audio: getConfigValue("SAVE_AUDIO", selectedId),
@@ -62,30 +115,30 @@ function run(jsonRequest) {
     const trueTypes = Object.entries(saveTypes)
         .filter(([_, value]) => value === true)
         .map(([key, _]) => key);
+    const messageText = getMessageText();
     if (trueTypes.includes(messageType)) {
-        saveFile(event);
-    } else if (messageType === "text") {
-        const messageText = event.message.text;
-        const userId = getUserId(event);
+        saveFile();
+    } else if (messageType === "text" && messageText) {
+        const userId = getUserId();
         if (
             getConfigValue("ALLOW_GET_LINK", userId) &&
             messageText === getConfigValue("COMMAND_GET_LINK", selectedId)
         ) {
-            getLink(event);
+            getLink();
         } else if (
             messageText === getConfigValue("COMMAND_GET_GROUP_ID", selectedId)
         ) {
-            log("Get Group id", `${userId} Get Group id ${getGroupId(event)}`);
+            log("Get Group id", `${userId} Get Group id ${getGroupId()}`);
             sendMsg(event.replyToken, selectedId);
         } else if (
             messageText === getConfigValue("COMMAND_GET_USER_ID", selectedId)
         ) {
-            log("Get User id", `${userId} Get User id ${getUserId(event)}`);
+            log("Get User id", `${userId} Get User id ${getUserId()}`);
             sendMsg(event.replyToken, userId);
         } else if (
             messageText === getConfigValue("COMMAND_GET_CONFIG", selectedId)
         ) {
-            log("Get help", `${getUserId(event)} Get help in ${selectedId}`);
+            log("Get help", `${getUserId()} Get help in ${selectedId}`);
             sendMsg(event.replyToken, configList(selectedId));
         } else if (
             messageText.startsWith(
@@ -115,6 +168,91 @@ function run(jsonRequest) {
                 );
             }
         }
+        if (getConfigValue("SAVE_MESSAGE", selectedId)) {
+            writeMessageLog();
+        }
+    }
+}
+
+function getMessageText() {
+    return getEvent()?.message?.text;
+}
+
+function getSelectedId() {
+    return getGroupId() ?? getUserId();
+}
+function writeMessageLog() {
+    const spreadsheet = createSpreadsheetFromFolderId(
+        getSelectedFolder().getId(),
+        "log"
+    );
+    const logSheet = createSheetIfNotExistsFromSpreadsheetId(
+        spreadsheet.getId(),
+        "log"
+    );
+    const userSheet = createSheetIfNotExistsFromSpreadsheetId(
+        spreadsheet.getId(),
+        "users"
+    );
+    const linkSheet = createSheetIfNotExistsFromSpreadsheetId(
+        spreadsheet.getId(),
+        "links"
+    );
+    if (!userSheet.getRange(1, 1).getValue()) {
+        userSheet.appendRow([
+            "userId",
+            "displayName",
+            "pictureUrl",
+            "language",
+        ]);
+    }
+    // get displayName from userId
+    const userId = getUserId();
+    let displayName = "";
+    for (let i = 1; i <= userSheet.getLastRow(); i++) {
+        if (userSheet.getRange(i, 1).getValue() === userId) {
+            displayName = userSheet.getRange(i, 2).getValue();
+            break;
+        }
+    }
+    if (!displayName) {
+        const lineUser = getLineUser();
+        displayName = lineUser.displayName;
+        userSheet.appendRow([
+            lineUser.userId,
+            lineUser.displayName,
+            lineUser.pictureUrl,
+            lineUser.language,
+        ]);
+    }
+
+    if (!logSheet.getRange(1, 1).getValue()) {
+        logSheet.appendRow([
+            "datetime",
+            "user",
+            "event",
+            "messageId",
+            "message",
+        ]);
+    }
+    logSheet.appendRow([
+        new Date(),
+        displayName,
+        getMessageType(),
+        getEvent().message.id,
+        getMessageText(),
+    ]);
+    if (!linkSheet.getRange(1, 1).getValue()) {
+        linkSheet.appendRow(["datetime", "user", "messageId", "link"]);
+    }
+    const extractedLinks = extractLinksFromString(getMessageText());
+    for (const link of extractedLinks) {
+        linkSheet.appendRow([
+            new Date(),
+            displayName,
+            getEvent().message.id,
+            link,
+        ]);
     }
 }
 function configList(selectedId) {
@@ -126,26 +264,28 @@ function configList(selectedId) {
         .join("\n");
 }
 
-function getMessageType(event: any) {
-    return event.message.type;
+function getMessageType() {
+    return getEvent().message.type;
 }
 
-function getGroupId(event: any) {
-    return event.source.groupId;
+function getGroupId() {
+    return getEvent().source.groupId;
 }
 
-function getUserId(event: any) {
-    return event.source.userId;
+function getUserId() {
+    return getEvent().source.userId;
 }
 
-function saveFile(event) {
-    const groupId = getGroupId(event);
-    const userId = getUserId(event);
-    const groupFolder = createFolderIfNotExists(
-        groupId ?? userId,
-        getCurrentFolder().getId()
-    );
-    const messageType = getMessageType(event);
+function getSelectedFolder() {
+    return createFolderIfNotExists(getSelectedId(), getCurrentFolder().getId());
+}
+
+function saveFile() {
+    const event = getEvent();
+    const groupId = getGroupId();
+    const userId = getUserId();
+    const groupFolder = getSelectedFolder();
+    const messageType = getMessageType();
     const typeFolder = createFolderIfNotExists(
         messageType,
         groupFolder.getId()
@@ -198,11 +338,11 @@ function saveFile(event) {
     typeFolder.createFile(file.getBlob()).setName(newFileName);
 }
 
-function getLink(event) {
-    const userId = getUserId(event);
-    const groupId = getGroupId(event);
+function getLink() {
+    const userId = getUserId();
+    const groupId = getGroupId();
     const selectedId = groupId ?? userId;
-    const replyToken = event.replyToken;
+    const replyToken = getEvent().replyToken;
     const isGroupFolderExists = getCurrentFolder()
         .getFoldersByName(selectedId)
         .hasNext();
@@ -237,7 +377,7 @@ function fetchFile(messageId) {
 function log(event, message) {
     createSheetIfNotExists("Log").appendRow([new Date(), event, message]);
 }
-function createFolderIfNotExists(folderName, parentFolderId) {
+function createFolderIfNotExists(folderName: string, parentFolderId: string) {
     const parentFolder = DriveApp.getFolderById(parentFolderId);
     const folders = parentFolder.getFoldersByName(folderName);
 
@@ -248,6 +388,47 @@ function createFolderIfNotExists(folderName, parentFolderId) {
         // Folder does not exist, create a new folder
         const newFolder = parentFolder.createFolder(folderName);
         return newFolder;
+    }
+}
+function createSpreadsheetFromFolderId(
+    folderId: string,
+    spreadsheetName: string
+) {
+    const folder = DriveApp.getFolderById(folderId);
+
+    // Check if a spreadsheet with the desired name already exists in the folder
+    const existingSpreadsheet = folder.getFilesByName(spreadsheetName);
+
+    if (existingSpreadsheet.hasNext()) {
+        // Spreadsheet already exists
+        const spreadsheet = SpreadsheetApp.open(existingSpreadsheet.next());
+        return spreadsheet;
+    } else {
+        // Create a new spreadsheet
+        const spreadsheet = SpreadsheetApp.create(spreadsheetName);
+
+        // Move the newly created spreadsheet to the desired folder
+        DriveApp.getFileById(spreadsheet.getId()).moveTo(folder);
+
+        return spreadsheet;
+    }
+}
+function createSheetIfNotExistsFromSpreadsheetId(
+    spreadsheetId: string,
+    sheetName: string
+) {
+    const spreadsheet = SpreadsheetApp.openById(spreadsheetId);
+
+    // Check if the sheet already exists in the spreadsheet
+    let sheet = spreadsheet.getSheetByName(sheetName);
+
+    if (sheet) {
+        // Sheet already exists
+        return sheet;
+    } else {
+        // Create a new sheet
+        sheet = spreadsheet.insertSheet(sheetName);
+        return sheet;
     }
 }
 function sendMsg(replyToken: string, msg: string) {
@@ -265,13 +446,6 @@ function sendMsg(replyToken: string, msg: string) {
         }),
     };
     UrlFetchApp.fetch(url, opt);
-}
-
-function downloadFileFromURL(url, folderId, fileName) {
-    const folder = DriveApp.getFolderById(folderId);
-    const response = UrlFetchApp.fetch(url);
-    const fileBlob = response.getBlob();
-    folder.createFile(fileBlob).setName(fileName);
 }
 
 function getCurrentFolder() {
@@ -306,6 +480,7 @@ function defaultConfig(): Config {
         SAVE_VIDEO: true,
         SAVE_AUDIO: true,
         SAVE_FILE: true,
+        SAVE_MESSAGE: true,
         ALLOW_GET_LINK: true,
         ALLOW_OVERWRITE: true,
         COMMAND_GET_LINK: "!link",
@@ -320,7 +495,7 @@ function defaultConfig(): Config {
     };
 }
 
-function getConfigValue(key: string, selectedId = null) {
+function getConfigValue(key: string, selectedId: string | null = null) {
     const defaultConfigValue = defaultConfig();
     const sheet = createSheetIfNotExists("Global Config");
     const keyColumn = 1;
@@ -382,4 +557,28 @@ function convertValue(value) {
         return Number(value);
     }
     return value.trim();
+}
+
+function getLineUser() {
+    const userId = getUserId();
+    if (lineUser) {
+        return lineUser;
+    }
+    const url = `https://api.line.me/v2/bot/profile/${userId}`;
+    const opt = {
+        headers: {
+            Authorization: `Bearer ${LINE_CHANNEL_ACCESS_TOKEN}`,
+        },
+    };
+    const response = UrlFetchApp.fetch(url, opt);
+    lineUser = JSON.parse(response.getContentText());
+    return lineUser;
+}
+function extractLinksFromString(text) {
+    const regex = /(https?:\/\/[^\s]+)/g;
+    const matches = text.match(regex);
+    if (matches) {
+        return matches;
+    }
+    return [];
 }
