@@ -18,8 +18,48 @@ interface Config {
     IS_LOG_REQUEST?: boolean;
     TEST_PAYLOAD?: string;
 }
+export interface JsonRequest {
+    destination: string;
+    events: ChatEvent[];
+}
+
+export interface ChatEvent {
+    type: string;
+    message: Message;
+    webhookEventId: string;
+    deliveryContext: DeliveryContext;
+    timestamp: number;
+    source: Source;
+    replyToken: string;
+    mode: string;
+}
+
+export interface DeliveryContext {
+    isRedelivery: boolean;
+}
+
+export interface Message {
+    type: string;
+    id: string;
+    text?: string;
+    fileName?: string;
+    fileSize?: number;
+    contentProvider?: ContentProvider;
+    duration?: number;
+}
+
+export interface ContentProvider {
+    type: string;
+}
+
+export interface Source {
+    type: string;
+    groupId: string;
+    userId: string;
+}
 
 const LINE_CHANNEL_ACCESS_TOKEN = getConfigValue("LINE_CHANNEL_ACCESS_TOKEN");
+let jsonRequest: JsonRequest;
 function publishConfig() {
     const sheet = createSheetIfNotExists("Global Config");
     createSheetIfNotExists("Group Config");
@@ -40,19 +80,23 @@ function publishConfig() {
     }
 }
 function doPost(e) {
-    const jsonRequest = JSON.parse(e.postData.contents);
+    jsonRequest = JSON.parse(e.postData.contents);
     if (getConfigValue("IS_LOG_REQUEST")) {
         log("Event", e.postData.contents);
     }
-    run(jsonRequest);
+    run();
 }
 function test() {
-    run(JSON.parse(getConfigValue("TEST_PAYLOAD")));
+    jsonRequest = JSON.parse(getConfigValue("TEST_PAYLOAD"));
+    run();
 }
-function run(jsonRequest) {
-    const event = jsonRequest.events[0];
-    const messageType = getMessageType(event);
-    const selectedId = getGroupId(event) ?? getUserId(event);
+function getEvent() {
+    return jsonRequest.events[0];
+}
+function run() {
+    const event = getEvent();
+    const messageType = getMessageType();
+    const selectedId = getSelectedId();
     const saveTypes = {
         image: getConfigValue("SAVE_IMAGE", selectedId),
         audio: getConfigValue("SAVE_AUDIO", selectedId),
@@ -62,30 +106,31 @@ function run(jsonRequest) {
     const trueTypes = Object.entries(saveTypes)
         .filter(([_, value]) => value === true)
         .map(([key, _]) => key);
+    const messageText = event?.message?.text;
     if (trueTypes.includes(messageType)) {
-        saveFile(event);
-    } else if (messageType === "text") {
-        const messageText = event.message.text;
-        const userId = getUserId(event);
+        saveFile();
+    } else if (messageType === "text" && messageText) {
+        const userId = getUserId();
+        writeMessageLog(event, messageText);
         if (
             getConfigValue("ALLOW_GET_LINK", userId) &&
             messageText === getConfigValue("COMMAND_GET_LINK", selectedId)
         ) {
-            getLink(event);
+            getLink();
         } else if (
             messageText === getConfigValue("COMMAND_GET_GROUP_ID", selectedId)
         ) {
-            log("Get Group id", `${userId} Get Group id ${getGroupId(event)}`);
+            log("Get Group id", `${userId} Get Group id ${getGroupId()}`);
             sendMsg(event.replyToken, selectedId);
         } else if (
             messageText === getConfigValue("COMMAND_GET_USER_ID", selectedId)
         ) {
-            log("Get User id", `${userId} Get User id ${getUserId(event)}`);
+            log("Get User id", `${userId} Get User id ${getUserId()}`);
             sendMsg(event.replyToken, userId);
         } else if (
             messageText === getConfigValue("COMMAND_GET_CONFIG", selectedId)
         ) {
-            log("Get help", `${getUserId(event)} Get help in ${selectedId}`);
+            log("Get help", `${getUserId()} Get help in ${selectedId}`);
             sendMsg(event.replyToken, configList(selectedId));
         } else if (
             messageText.startsWith(
@@ -117,6 +162,12 @@ function run(jsonRequest) {
         }
     }
 }
+
+function getSelectedId() {
+    return getGroupId() ?? getUserId();
+}
+
+function writeMessageLog(event, messageText) {}
 function configList(selectedId) {
     const keys = Object.keys(defaultConfig()).filter(
         (key) => key !== "LINE_CHANNEL_ACCESS_TOKEN"
@@ -126,26 +177,28 @@ function configList(selectedId) {
         .join("\n");
 }
 
-function getMessageType(event: any) {
-    return event.message.type;
+function getMessageType() {
+    return getEvent().message.type;
 }
 
-function getGroupId(event: any) {
-    return event.source.groupId;
+function getGroupId() {
+    return getEvent().source.groupId;
 }
 
-function getUserId(event: any) {
-    return event.source.userId;
+function getUserId() {
+    return getEvent().source.userId;
 }
 
-function saveFile(event) {
-    const groupId = getGroupId(event);
-    const userId = getUserId(event);
-    const groupFolder = createFolderIfNotExists(
-        groupId ?? userId,
-        getCurrentFolder().getId()
-    );
-    const messageType = getMessageType(event);
+function getSelectedFolder() {
+    return createFolderIfNotExists(getSelectedId(), getCurrentFolder().getId());
+}
+
+function saveFile() {
+    const event = getEvent();
+    const groupId = getGroupId();
+    const userId = getUserId();
+    const groupFolder = getSelectedFolder();
+    const messageType = getMessageType();
     const typeFolder = createFolderIfNotExists(
         messageType,
         groupFolder.getId()
@@ -198,11 +251,11 @@ function saveFile(event) {
     typeFolder.createFile(file.getBlob()).setName(newFileName);
 }
 
-function getLink(event) {
-    const userId = getUserId(event);
-    const groupId = getGroupId(event);
+function getLink() {
+    const userId = getUserId();
+    const groupId = getGroupId();
     const selectedId = groupId ?? userId;
-    const replyToken = event.replyToken;
+    const replyToken = getEvent().replyToken;
     const isGroupFolderExists = getCurrentFolder()
         .getFoldersByName(selectedId)
         .hasNext();
@@ -250,6 +303,47 @@ function createFolderIfNotExists(folderName, parentFolderId) {
         return newFolder;
     }
 }
+function createSpreadsheetFromFolder(
+    folderId: string,
+    spreadsheetName: string
+) {
+    const folder = DriveApp.getFolderById(folderId);
+
+    // Check if a spreadsheet with the desired name already exists in the folder
+    const existingSpreadsheet = folder.getFilesByName(spreadsheetName);
+
+    if (existingSpreadsheet.hasNext()) {
+        // Spreadsheet already exists
+        const spreadsheet = SpreadsheetApp.open(existingSpreadsheet.next());
+        return spreadsheet;
+    } else {
+        // Create a new spreadsheet
+        const spreadsheet = SpreadsheetApp.create(spreadsheetName);
+
+        // Move the newly created spreadsheet to the desired folder
+        DriveApp.getFileById(spreadsheet.getId()).moveTo(folder);
+
+        return spreadsheet;
+    }
+}
+function createSheetIfNotExistsFromSpreadsheetId(spreadsheetId, sheetName) {
+    const spreadsheet = SpreadsheetApp.openById(spreadsheetId);
+
+    // Check if the sheet already exists in the spreadsheet
+    let sheet = spreadsheet.getSheetByName(sheetName);
+
+    if (sheet) {
+        // Sheet already exists
+        return;
+    } else {
+        // Create a new sheet
+        sheet = spreadsheet.insertSheet(sheetName);
+
+        // Add headers
+        const headers = ["id", "first_name", "last_name"];
+        sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+    }
+}
 function sendMsg(replyToken: string, msg: string) {
     const url = "https://api.line.me/v2/bot/message/reply";
 
@@ -265,13 +359,6 @@ function sendMsg(replyToken: string, msg: string) {
         }),
     };
     UrlFetchApp.fetch(url, opt);
-}
-
-function downloadFileFromURL(url, folderId, fileName) {
-    const folder = DriveApp.getFolderById(folderId);
-    const response = UrlFetchApp.fetch(url);
-    const fileBlob = response.getBlob();
-    folder.createFile(fileBlob).setName(fileName);
 }
 
 function getCurrentFolder() {
@@ -320,7 +407,7 @@ function defaultConfig(): Config {
     };
 }
 
-function getConfigValue(key: string, selectedId = null) {
+function getConfigValue(key: string, selectedId: string | null = null) {
     const defaultConfigValue = defaultConfig();
     const sheet = createSheetIfNotExists("Global Config");
     const keyColumn = 1;
