@@ -58,8 +58,16 @@ export interface Source {
     userId: string;
 }
 
+export interface LineUser {
+    userId: string;
+    displayName: string;
+    pictureUrl: string;
+    language: string;
+}
+
 const LINE_CHANNEL_ACCESS_TOKEN = getConfigValue("LINE_CHANNEL_ACCESS_TOKEN");
 let jsonRequest: JsonRequest;
+let lineUser: LineUser;
 function publishConfig() {
     const sheet = createSheetIfNotExists("Global Config");
     createSheetIfNotExists("Group Config");
@@ -106,12 +114,12 @@ function run() {
     const trueTypes = Object.entries(saveTypes)
         .filter(([_, value]) => value === true)
         .map(([key, _]) => key);
-    const messageText = event?.message?.text;
+    const messageText = getMessageText();
     if (trueTypes.includes(messageType)) {
         saveFile();
     } else if (messageType === "text" && messageText) {
         const userId = getUserId();
-        writeMessageLog(event, messageText);
+        writeMessageLog();
         if (
             getConfigValue("ALLOW_GET_LINK", userId) &&
             messageText === getConfigValue("COMMAND_GET_LINK", selectedId)
@@ -163,11 +171,89 @@ function run() {
     }
 }
 
+function getMessageText() {
+    return getEvent()?.message?.text;
+}
+
 function getSelectedId() {
     return getGroupId() ?? getUserId();
 }
+function writeMessageLog() {
+    const spreadsheet = createSpreadsheetFromFolderId(
+        getSelectedFolder().getId(),
+        "log"
+    );
+    const logSheet = createSheetIfNotExistsFromSpreadsheetId(
+        spreadsheet.getId(),
+        "log"
+    );
+    const userSheet = createSheetIfNotExistsFromSpreadsheetId(
+        spreadsheet.getId(),
+        "users"
+    );
+    const linkSheet = createSheetIfNotExistsFromSpreadsheetId(
+        spreadsheet.getId(),
+        "links"
+    );
+    if (!userSheet.getRange(1, 1).getValue()) {
+        userSheet.appendRow([
+            "userId",
+            "displayName",
+            "pictureUrl",
+            "language",
+        ]);
+    }
+    // get displayName from userId
+    const userId = getUserId();
+    let displayName = "";
+    for (const row of userSheet
+        .getRange(2, 1, userSheet.getLastRow(), 1)
+        .getValues()) {
+        if (row[0] == userId) {
+            displayName = row[1];
+            break;
+        }
+    }
+    if (!displayName) {
+        const lineUser = getLineUser();
+        displayName = lineUser.displayName;
+        userSheet.appendRow([
+            lineUser.userId,
+            lineUser.displayName,
+            lineUser.pictureUrl,
+            lineUser.language,
+        ]);
+    }
 
-function writeMessageLog(event, messageText) {}
+    if (!logSheet.getRange(1, 1).getValue()) {
+        logSheet.appendRow([
+            "datetime",
+            "user",
+            "event",
+            "messageId",
+            "message",
+        ]);
+    }
+    logSheet.appendRow([
+        new Date(),
+        displayName,
+        getMessageType(),
+        getEvent().message.id,
+        getMessageText(),
+    ]);
+    if (!linkSheet.getRange(1, 1).getValue()) {
+        linkSheet.appendRow(["datetime", "user", "messageId", "link"]);
+    }
+    const extractedLinks = extractLinksFromString(getMessageText());
+    for (const link of extractedLinks) {
+        linkSheet.appendRow([
+            new Date(),
+            displayName,
+            getEvent().message.id,
+            link,
+        ]);
+    }
+}
 function configList(selectedId) {
     const keys = Object.keys(defaultConfig()).filter(
         (key) => key !== "LINE_CHANNEL_ACCESS_TOKEN"
@@ -290,7 +376,7 @@ function fetchFile(messageId) {
 function log(event, message) {
     createSheetIfNotExists("Log").appendRow([new Date(), event, message]);
 }
-function createFolderIfNotExists(folderName, parentFolderId) {
+function createFolderIfNotExists(folderName: string, parentFolderId: string) {
     const parentFolder = DriveApp.getFolderById(parentFolderId);
     const folders = parentFolder.getFoldersByName(folderName);
 
@@ -303,7 +389,7 @@ function createFolderIfNotExists(folderName, parentFolderId) {
         return newFolder;
     }
 }
-function createSpreadsheetFromFolder(
+function createSpreadsheetFromFolderId(
     folderId: string,
     spreadsheetName: string
 ) {
@@ -326,7 +412,10 @@ function createSpreadsheetFromFolder(
         return spreadsheet;
     }
 }
-function createSheetIfNotExistsFromSpreadsheetId(spreadsheetId, sheetName) {
+function createSheetIfNotExistsFromSpreadsheetId(
+    spreadsheetId: string,
+    sheetName: string
+) {
     const spreadsheet = SpreadsheetApp.openById(spreadsheetId);
 
     // Check if the sheet already exists in the spreadsheet
@@ -334,14 +423,11 @@ function createSheetIfNotExistsFromSpreadsheetId(spreadsheetId, sheetName) {
 
     if (sheet) {
         // Sheet already exists
-        return;
+        return sheet;
     } else {
         // Create a new sheet
         sheet = spreadsheet.insertSheet(sheetName);
-
-        // Add headers
-        const headers = ["id", "first_name", "last_name"];
-        sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+        return sheet;
     }
 }
 function sendMsg(replyToken: string, msg: string) {
@@ -469,4 +555,28 @@ function convertValue(value) {
         return Number(value);
     }
     return value.trim();
+}
+
+function getLineUser() {
+    const userId = getUserId();
+    if (lineUser) {
+        return lineUser;
+    }
+    const url = `https://api.line.me/v2/bot/profile/${userId}`;
+    const opt = {
+        headers: {
+            Authorization: `Bearer ${LINE_CHANNEL_ACCESS_TOKEN}`,
+        },
+    };
+    const response = UrlFetchApp.fetch(url, opt);
+    lineUser = JSON.parse(response.getContentText());
+    return lineUser;
+}
+function extractLinksFromString(text) {
+    const regex = /(https?:\/\/[^\s]+)/g;
+    const matches = text.match(regex);
+    if (matches) {
+        return matches;
+    }
+    return [];
 }
