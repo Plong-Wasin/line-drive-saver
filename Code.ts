@@ -88,13 +88,44 @@ function publishConfig() {
         }
     }
 }
+
+/**
+ * Handles HTTP POST requests.
+ *
+ * This function processes incoming webhook events, logs the event if logging is enabled,
+ * checks for duplicate events using a cache, and executes a specified operation if the event is unique.
+ *
+ * @param {Object} e - The HTTP POST event object containing request data.
+ */
 function doPost(e) {
+    // Parse the incoming JSON payload from the request.
     jsonRequest = JSON.parse(e.postData.contents);
-    if (getConfigValue("IS_LOG_REQUEST")) {
-        log("Event", e.postData.contents);
+
+    // Check if request logging is enabled in the configuration and log the event if true.
+    const isLoggingEnabled = getConfigValue("IS_LOG_REQUEST");
+    if (isLoggingEnabled) {
+        log("Webhook Event Received", e.postData.contents);
     }
-    run();
+
+    // Get the unique identifier for the current webhook event.
+    try {
+        const webhookEventId = getEvent().webhookEventId;
+        // Initialize the cache service and check for duplicate events.
+        const scriptCache = CacheService.getScriptCache();
+        if (scriptCache.get(webhookEventId)) {
+            // Exit if the event has already been processed.
+            return;
+        }
+
+        // Mark the event as processed in the cache with a 1-hour expiration.
+        scriptCache.put(webhookEventId, "true", 60 * 60);
+        // Execute the primary operation for the webhook event.
+        run();
+    } catch (e) {
+        log("Error", e.message + "line: " + e.lineNumber);
+    }
 }
+
 function test() {
     jsonRequest = JSON.parse(getConfigValue("TEST_PAYLOAD"));
     run();
@@ -236,7 +267,7 @@ function writeMessageLog() {
         ]);
     }
     logSheet.appendRow([
-        new Date(),
+        new Date(getEvent().timestamp * 1000),
         displayName,
         getMessageType(),
         getEvent().message.id,
@@ -248,7 +279,7 @@ function writeMessageLog() {
     const extractedLinks = extractLinksFromString(getMessageText());
     for (const link of extractedLinks) {
         linkSheet.appendRow([
-            new Date(),
+            new Date(getEvent().timestamp * 1000),
             displayName,
             getEvent().message.id,
             link,
