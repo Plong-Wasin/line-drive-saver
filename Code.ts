@@ -90,145 +90,185 @@ function publishConfig() {
 }
 
 /**
- * Handles HTTP POST requests.
- *
- * This function processes incoming webhook events, logs the event if logging is enabled,
- * checks for duplicate events using a cache, and executes a specified operation if the event is unique.
- *
- * @param {Object} e - The HTTP POST event object containing request data.
+ * Handles incoming HTTP POST requests.
+ * @param e - Event object containing the POST request data.
  */
-function doPost(e) {
-    // Parse the incoming JSON payload from the request.
+function doPost(e: GoogleAppsScript.Events.DoPost): void {
     jsonRequest = JSON.parse(e.postData.contents);
 
-    // Check if request logging is enabled in the configuration and log the event if true.
-    const isLoggingEnabled = getConfigValue("IS_LOG_REQUEST");
+    const isLoggingEnabled = getConfigValue("IS_LOG_REQUEST") as boolean;
     if (isLoggingEnabled) {
         log("Webhook Event Received", e.postData.contents);
     }
 
-    // Get the unique identifier for the current webhook event.
-    try {
-        const webhookEventId = getEvent().webhookEventId;
-        // Initialize the cache service and check for duplicate events.
-        const scriptCache = CacheService.getScriptCache();
-        if (scriptCache.get(webhookEventId)) {
-            // Exit if the event has already been processed.
-            return;
-        }
+    for (const event of jsonRequest.events) {
+        try {
+            const scriptCache = CacheService.getScriptCache();
 
-        // Mark the event as processed in the cache with a 1-hour expiration.
-        scriptCache.put(webhookEventId, "true", 60 * 60);
-        // Execute the primary operation for the webhook event.
-        run();
-    } catch (e) {
-        log("Error", e.message + "line: " + e.lineNumber);
+            if (scriptCache.get(event.webhookEventId)) {
+                continue; // Skip duplicate events.
+            }
+
+            scriptCache.put(event.webhookEventId, "true", 3600);
+            processEvent(event);
+        } catch (error) {
+            log("Error processing event", error);
+        }
     }
 }
 
 function test() {
     jsonRequest = JSON.parse(getConfigValue("TEST_PAYLOAD"));
-    run();
+    for (const event of jsonRequest.events) {
+        processEvent(event);
+    }
 }
-function getEvent() {
-    return jsonRequest.events[0];
-}
-function run() {
-    const event = getEvent();
-    const messageType = getMessageType();
-    const selectedId = getSelectedId();
+
+/**
+ * Processes each incoming chat event and performs actions based on the event's message.
+ * @param chatEvent - The chat event to process.
+ */
+function processEvent(chatEvent: ChatEvent) {
+    const messageType = chatEvent.message.type;
+    const selectedId = chatEvent.source.groupId ?? chatEvent.source.userId;
     const saveTypes = {
         image: getConfigValue("SAVE_IMAGE", selectedId),
         audio: getConfigValue("SAVE_AUDIO", selectedId),
         video: getConfigValue("SAVE_VIDEO", selectedId),
         file: getConfigValue("SAVE_FILE", selectedId),
     };
-    const trueTypes = Object.entries(saveTypes)
-        .filter(([_, value]) => value === true)
-        .map(([key, _]) => key);
-    const messageText = getMessageText();
-    if (trueTypes.includes(messageType)) {
-        saveFile();
+    const allowedMessageTypes = Object.entries(saveTypes)
+        .filter(([_, shouldSave]) => shouldSave)
+        .map(([type]) => type);
+
+    const messageText = chatEvent.message.text;
+
+    if (allowedMessageTypes.includes(messageType)) {
+        saveFile(chatEvent);
     } else if (messageType === "text" && messageText) {
-        const userId = getUserId();
-        if (
-            getConfigValue("ALLOW_GET_LINK", userId) &&
-            messageText === getConfigValue("COMMAND_GET_LINK", selectedId)
-        ) {
-            getLink();
-        } else if (
-            messageText === getConfigValue("COMMAND_GET_GROUP_ID", selectedId)
-        ) {
-            log("Get Group id", `${userId} Get Group id ${getGroupId()}`);
-            sendMsg(event.replyToken, selectedId);
-        } else if (
-            messageText === getConfigValue("COMMAND_GET_USER_ID", selectedId)
-        ) {
-            log("Get User id", `${userId} Get User id ${getUserId()}`);
-            sendMsg(event.replyToken, userId);
-        } else if (
-            messageText === getConfigValue("COMMAND_GET_CONFIG", selectedId)
-        ) {
-            log("Get help", `${getUserId()} Get help in ${selectedId}`);
-            sendMsg(event.replyToken, configList(selectedId));
-        } else if (
-            messageText.startsWith(
-                getConfigValue("COMMAND_PREFIX_SET_COMMANDS", selectedId)
-            ) &&
-            getConfigValue("ALLOW_OVERWRITE", selectedId)
-        ) {
-            const key = messageText
-                .replace(
-                    getConfigValue("COMMAND_PREFIX_SET_COMMANDS", selectedId),
-                    ""
-                )
-                .split("=")[0]
-                .trim();
-            const value = messageText.split("=")[1].trim();
-            if (
-                key &&
-                value &&
-                key in defaultConfig() &&
-                typeof defaultConfig()[key] === typeof convertValue(value)
-            ) {
-                setGroupConfig(key, selectedId, convertValue(value));
-                sendMsg(event.replyToken, `Set ${key} to ${value}`);
-                log(
-                    `Set ${key} to ${value}`,
-                    `${userId} Set ${key} to ${value} in ${selectedId}`
-                );
-            }
-        }
-        if (getConfigValue("SAVE_MESSAGE", selectedId)) {
-            writeMessageLog();
-        }
+        handleCommandMessages(chatEvent, messageText, selectedId);
     }
 }
 
-function getMessageText() {
-    return getEvent()?.message?.text;
+/**
+ * Handles specific command messages sent by the user.
+ * @param chatEvent - The event containing the message.
+ * @param messageText - The text of the message.
+ * @param selectedId - The selected ID (group or user).
+ */
+function handleCommandMessages(
+    chatEvent: ChatEvent,
+    messageText: string,
+    selectedId: string
+) {
+    const userId = chatEvent.source.userId;
+
+    if (
+        getConfigValue("ALLOW_GET_LINK", userId) &&
+        messageText === getConfigValue("COMMAND_GET_LINK", selectedId)
+    ) {
+        getLink(chatEvent);
+    } else if (
+        messageText === getConfigValue("COMMAND_GET_GROUP_ID", selectedId)
+    ) {
+        log(
+            "Get Group id",
+            `${userId} Get Group id ${chatEvent.source.groupId}`
+        );
+        sendMsg(chatEvent.replyToken, selectedId);
+    } else if (
+        messageText === getConfigValue("COMMAND_GET_USER_ID", selectedId)
+    ) {
+        log("Get User id", `${userId} Get User id ${chatEvent.source.userId}`);
+        sendMsg(chatEvent.replyToken, userId);
+    } else if (
+        messageText === getConfigValue("COMMAND_GET_CONFIG", selectedId)
+    ) {
+        log("Get help", `${userId} Get help in ${selectedId}`);
+        sendMsg(chatEvent.replyToken, configList(selectedId));
+    } else if (
+        messageText.startsWith(
+            getConfigValue("COMMAND_PREFIX_SET_COMMANDS", selectedId)
+        ) &&
+        getConfigValue("ALLOW_OVERWRITE", selectedId)
+    ) {
+        setConfigFromMessage(chatEvent, messageText, selectedId);
+    }
+    if (getConfigValue("SAVE_MESSAGE", selectedId)) {
+        logMessage(chatEvent);
+    }
+}
+/**
+ * Sets the group configuration from a message command.
+ * @param chatEvent - The event containing the message.
+ * @param messageText - The text of the message.
+ * @param selectedId - The selected ID (group or user).
+ */
+function setConfigFromMessage(
+    chatEvent: ChatEvent,
+    messageText: string,
+    selectedId: string
+) {
+    const keyValue = messageText
+        .replace(getConfigValue("COMMAND_PREFIX_SET_COMMANDS", selectedId), "")
+        .split("=");
+
+    const key = keyValue[0]?.trim();
+    const value = keyValue[1]?.trim();
+
+    if (
+        key &&
+        value &&
+        key in defaultConfig() &&
+        typeof defaultConfig()[key] === typeof convertValue(value)
+    ) {
+        setGroupConfig(key, selectedId, convertValue(value));
+        sendMsg(chatEvent.replyToken, `Set ${key} to ${value}`);
+        log(
+            `Set ${key} to ${value}`,
+            `${chatEvent.source.userId} Set ${key} to ${value} in ${selectedId}`
+        );
+    }
 }
 
-function getSelectedId() {
-    return getGroupId() ?? getUserId();
-}
-function writeMessageLog() {
-    const spreadsheet = createSpreadsheetFromFolderId(
-        getSelectedFolder().getId(),
+/**
+ * Logs the message details to the appropriate log sheet.
+ * @param chatEvent - The event containing the message.
+ */
+function logMessage(chatEvent: ChatEvent) {
+    const selectedId = chatEvent.source.groupId ?? chatEvent.source.userId;
+    const logSpreadsheet = createSpreadsheetFromFolderId(
+        getSelectedFolder(selectedId).getId(),
         "log"
     );
     const logSheet = createSheetIfNotExistsFromSpreadsheetId(
-        spreadsheet.getId(),
+        logSpreadsheet.getId(),
         "log"
     );
     const userSheet = createSheetIfNotExistsFromSpreadsheetId(
-        spreadsheet.getId(),
+        logSpreadsheet.getId(),
         "users"
     );
     const linkSheet = createSheetIfNotExistsFromSpreadsheetId(
-        spreadsheet.getId(),
+        logSpreadsheet.getId(),
         "links"
     );
+
+    ensureUserSheetIsPopulated(userSheet, chatEvent.source.userId);
+
+    const userId = chatEvent.source.userId;
+    const userDisplayName = getDisplayName(userSheet, userId);
+
+    appendLogData(logSheet, userDisplayName, chatEvent);
+    appendLinks(linkSheet, chatEvent);
+}
+
+/**
+ * Ensures that the user sheet is populated with the necessary data.
+ * @param userSheet - The user sheet to check.
+ * @param userId - The user ID to check.
+ */
+function ensureUserSheetIsPopulated(userSheet, userId: string) {
     if (!userSheet.getRange(1, 1).getValue()) {
         userSheet.appendRow([
             "userId",
@@ -237,18 +277,10 @@ function writeMessageLog() {
             "language",
         ]);
     }
-    // get displayName from userId
-    const userId = getUserId();
-    let displayName = "";
-    for (let i = 1; i <= userSheet.getLastRow(); i++) {
-        if (userSheet.getRange(i, 1).getValue() === userId) {
-            displayName = userSheet.getRange(i, 2).getValue();
-            break;
-        }
-    }
+
+    const displayName = getDisplayName(userSheet, userId);
     if (!displayName) {
-        const lineUser = getLineUser();
-        displayName = lineUser.displayName;
+        const lineUser = getLineUser(userId);
         userSheet.appendRow([
             lineUser.userId,
             lineUser.displayName,
@@ -256,74 +288,84 @@ function writeMessageLog() {
             lineUser.language,
         ]);
     }
+}
 
-    if (!logSheet.getRange(1, 1).getValue()) {
-        logSheet.appendRow([
-            "datetime",
-            "user",
-            "event",
-            "messageId",
-            "message",
-        ]);
+/**
+ * Retrieves the display name of a user.
+ * @param userSheet - The user sheet to check.
+ * @param userId - The user ID to look up.
+ * @returns The display name of the user.
+ */
+function getDisplayName(userSheet, userId: string): string {
+    let displayName = "";
+    for (let i = 1; i <= userSheet.getLastRow(); i++) {
+        if (userSheet.getRange(i, 1).getValue() === userId) {
+            displayName = userSheet.getRange(i, 2).getValue();
+            break;
+        }
     }
+    return displayName;
+}
+
+/**
+ * Appends log data to the log sheet.
+ * @param logSheet - The log sheet to append data to.
+ * @param displayName - The display name of the user.
+ * @param message - The message data to log.
+ */
+function appendLogData(logSheet, displayName: string, chatEvent: ChatEvent) {
     logSheet.appendRow([
-        new Date(getEvent().timestamp * 1000),
+        new Date(chatEvent.timestamp * 1000),
         displayName,
-        getMessageType(),
-        getEvent().message.id,
-        getMessageText(),
+        chatEvent.message.type,
+        chatEvent.message.id,
+        chatEvent.message.text,
     ]);
-    if (!linkSheet.getRange(1, 1).getValue()) {
-        linkSheet.appendRow(["datetime", "user", "messageId", "link"]);
-    }
-    const extractedLinks = extractLinksFromString(getMessageText());
-    for (const link of extractedLinks) {
+}
+
+/**
+ * Appends extracted links from the message text to the link sheet.
+ * @param linkSheet - The link sheet to append data to.
+ * @param message - The message containing the text with links.
+ */
+function appendLinks(linkSheet, chatEvent: ChatEvent) {
+    const extractedLinks = extractLinksFromString(chatEvent.message.text);
+    extractedLinks.forEach((link) => {
         linkSheet.appendRow([
-            new Date(getEvent().timestamp * 1000),
-            displayName,
-            getEvent().message.id,
+            new Date(chatEvent.timestamp * 1000),
+            chatEvent.message.text,
+            chatEvent.message.id,
             link,
         ]);
-    }
+    });
 }
+
 function configList(selectedId) {
+    const hiddenKeys = ["LINE_CHANNEL_ACCESS_TOKEN"];
     const keys = Object.keys(defaultConfig()).filter(
-        (key) => key !== "LINE_CHANNEL_ACCESS_TOKEN"
+        (key) => !hiddenKeys.includes(key)
     );
     return keys
         .map((key) => `${key} = ${getConfigValue(key, selectedId)}`)
         .join("\n");
 }
 
-function getMessageType() {
-    return getEvent().message.type;
+function getSelectedFolder(selectedId: string) {
+    return createFolderIfNotExists(selectedId, getCurrentFolder().getId());
 }
 
-function getGroupId() {
-    return getEvent().source.groupId;
-}
-
-function getUserId() {
-    return getEvent().source.userId;
-}
-
-function getSelectedFolder() {
-    return createFolderIfNotExists(getSelectedId(), getCurrentFolder().getId());
-}
-
-function saveFile() {
-    const event = getEvent();
-    const groupId = getGroupId();
-    const userId = getUserId();
-    const groupFolder = getSelectedFolder();
-    const messageType = getMessageType();
+function saveFile(chatEvent: ChatEvent) {
+    const groupId = chatEvent.source.groupId;
+    const userId = chatEvent.source.userId;
+    const groupFolder = getSelectedFolder(groupId ?? userId);
+    const messageType = chatEvent.message.type;
     const typeFolder = createFolderIfNotExists(
         messageType,
         groupFolder.getId()
     );
-    const messageId = event.message.id;
-    const fileName = event.message.fileName;
-    const timestamp = event.timestamp;
+    const messageId = chatEvent.message.id;
+    const fileName = chatEvent.message.fileName;
+    const timestamp = chatEvent.timestamp;
     const file = fetchFile(messageId);
     const extension = file.getBlob().getContentType().split("/")[1];
     // replace file name pattern
@@ -369,11 +411,11 @@ function saveFile() {
     typeFolder.createFile(file.getBlob()).setName(newFileName);
 }
 
-function getLink() {
-    const userId = getUserId();
-    const groupId = getGroupId();
+function getLink(chatEvent: ChatEvent) {
+    const userId = chatEvent.source.userId;
+    const groupId = chatEvent.source.groupId;
     const selectedId = groupId ?? userId;
-    const replyToken = getEvent().replyToken;
+    const replyToken = chatEvent.replyToken;
     const isGroupFolderExists = getCurrentFolder()
         .getFoldersByName(selectedId)
         .hasNext();
@@ -389,12 +431,7 @@ function getLink() {
         sendMsg(replyToken, "No file found");
     }
 }
-function checkFolderExists(folderName: string, parentFolderId: string) {
-    const parentFolder = DriveApp.getFolderById(parentFolderId);
-    const folders = parentFolder.getFoldersByName(folderName);
 
-    return folders.hasNext();
-}
 function fetchFile(messageId) {
     const url = `https://api-data.line.me/v2/bot/message/${messageId}/content`;
     const opt = {
@@ -405,7 +442,7 @@ function fetchFile(messageId) {
     const response = UrlFetchApp.fetch(url, opt);
     return response;
 }
-function log(event, message) {
+function log(event: string, message) {
     createSheetIfNotExists("Log").appendRow([new Date(), event, message]);
 }
 function createFolderIfNotExists(folderName: string, parentFolderId: string) {
@@ -590,8 +627,7 @@ function convertValue(value) {
     return value.trim();
 }
 
-function getLineUser() {
-    const userId = getUserId();
+function getLineUser(userId) {
     if (lineUser) {
         return lineUser;
     }
