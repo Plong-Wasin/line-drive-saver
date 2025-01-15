@@ -4,6 +4,12 @@
 
 LineDrive Saver is a Line bot that allows you to save files to Google Drive.
 
+## Caution
+
+**Important:** This script does not verify the signature of incoming requests from Line due to limitations with Google Apps Script, which does not support the verification of request signatures. As a result, it is **not recommended** to use this script in production environments or with sensitive data unless additional measures are taken to secure your webhook endpoints.
+
+For enhanced security, consider implementing custom signature verification or using alternative methods to ensure that incoming requests are valid and coming from the trusted source.
+
 ## Requirements
 
 1. **Line Developer Account**: Line Developer Account is required to create and manage your Line bot. You can sign up for a Line Developer Account at [Line Developers website](https://developers.line.biz/en/). Once you have an account, you'll be able to create a Line channel for your bot and obtain the Line channel access token.
