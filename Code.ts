@@ -64,12 +64,13 @@ export interface LineUser {
     userId: string;
     displayName: string;
     pictureUrl: string;
-    language: string;
+    language?: string;
 }
 
 const LINE_CHANNEL_ACCESS_TOKEN = getConfigValue("LINE_CHANNEL_ACCESS_TOKEN");
+const scriptCache = CacheService.getScriptCache();
 let jsonRequest: JsonRequest;
-let lineUser: LineUser;
+
 function publishConfig() {
     const sheet = createSheetIfNotExists("Global Config");
     createSheetIfNotExists("Group Config");
@@ -104,8 +105,6 @@ function doPost(e: GoogleAppsScript.Events.DoPost): void {
 
     for (const event of jsonRequest.events) {
         try {
-            const scriptCache = CacheService.getScriptCache();
-
             if (scriptCache.get(event.webhookEventId)) {
                 continue; // Skip duplicate events.
             }
@@ -260,7 +259,11 @@ function logMessage(chatEvent: ChatEvent) {
         "links"
     );
 
-    ensureUserSheetIsPopulated(userSheet, chatEvent.source.userId);
+    ensureUserSheetIsPopulated(
+        userSheet,
+        chatEvent.source.userId,
+        chatEvent.source.groupId
+    );
 
     const userId = chatEvent.source.userId;
     const userDisplayName = getDisplayName(userSheet, userId);
@@ -276,8 +279,13 @@ function logMessage(chatEvent: ChatEvent) {
  * Ensures that the user sheet is populated with the necessary data.
  * @param userSheet - The user sheet to check.
  * @param userId - The user ID to check.
+ * @param groupId - The group ID to check.
  */
-function ensureUserSheetIsPopulated(userSheet, userId: string) {
+function ensureUserSheetIsPopulated(
+    userSheet,
+    userId: string,
+    groupId?: string
+) {
     if (!userSheet.getRange(1, 1).getValue()) {
         userSheet.appendRow([
             "userId",
@@ -289,7 +297,9 @@ function ensureUserSheetIsPopulated(userSheet, userId: string) {
 
     const displayName = getDisplayName(userSheet, userId);
     if (!displayName) {
-        const lineUser = getLineUser(userId);
+        const lineUser = groupId
+            ? getUserProfileFromGroup(groupId, userId)
+            : getLineUser(userId);
         userSheet.appendRow([
             lineUser.userId,
             lineUser.displayName,
@@ -683,8 +693,9 @@ function convertValue(value) {
 }
 
 function getLineUser(userId: string) {
-    if (lineUser) {
-        return lineUser;
+    const cacheKey = `lineUser_${userId}`;
+    if (scriptCache.get(cacheKey)) {
+        return JSON.parse(scriptCache.get(cacheKey) ?? "{}");
     }
     const url = `https://api.line.me/v2/bot/profile/${userId}`;
     const opt = {
@@ -693,8 +704,31 @@ function getLineUser(userId: string) {
         },
     };
     const response = UrlFetchApp.fetch(url, opt);
-    lineUser = JSON.parse(response.getContentText());
-    return lineUser;
+    scriptCache.put(cacheKey, response.getContentText());
+    return JSON.parse(response.getContentText());
+}
+
+/**
+ * Fetches the LINE user profile from a specific group using the group ID and user ID.
+ *
+ * @param groupId - The ID of the LINE group.
+ * @param userId - The ID of the LINE user to fetch.
+ * @returns An object representing the LINE user's profile.
+ */
+function getUserProfileFromGroup(groupId: string, userId: string): LineUser {
+    const cacheKey = `lineUser_${groupId}_${userId}`;
+    if (scriptCache.get(cacheKey)) {
+        return JSON.parse(scriptCache.get(cacheKey) ?? "{}");
+    }
+    const url = `https://api.line.me/v2/bot/group/${groupId}/member/${userId}`;
+    const opt = {
+        headers: {
+            Authorization: `Bearer ${LINE_CHANNEL_ACCESS_TOKEN}`,
+        },
+    };
+    const response = UrlFetchApp.fetch(url, opt);
+    scriptCache.put(cacheKey, response.getContentText());
+    return JSON.parse(response.getContentText());
 }
 function extractLinksFromString(text: string) {
     const regex = /(https?:\/\/[^\s]+)/g;
