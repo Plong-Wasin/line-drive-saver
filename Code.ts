@@ -71,6 +71,7 @@ const LINE_CHANNEL_ACCESS_TOKEN = getConfigValue("LINE_CHANNEL_ACCESS_TOKEN");
 const scriptCache = CacheService.getScriptCache();
 let jsonRequest: JsonRequest;
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function publishConfig() {
     const sheet = createSheetIfNotExists("Global Config");
     createSheetIfNotExists("Group Config");
@@ -95,6 +96,7 @@ function publishConfig() {
  * Handles incoming HTTP POST requests.
  * @param e - Event object containing the POST request data.
  */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function doPost(e: GoogleAppsScript.Events.DoPost): void {
     jsonRequest = JSON.parse(e.postData.contents);
 
@@ -119,6 +121,7 @@ function doPost(e: GoogleAppsScript.Events.DoPost): void {
     }
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function test() {
     jsonRequest = JSON.parse(getConfigValue("TEST_PAYLOAD"));
     for (const event of jsonRequest.events) {
@@ -148,6 +151,7 @@ function handleMessage(chatEvent: ChatEvent, selectedId: string) {
         file: getConfigValue("SAVE_FILE", selectedId),
     };
     const allowedMessageTypes = Object.entries(saveTypes)
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
         .filter(([_, shouldSave]) => shouldSave)
         .map(([type]) => type);
     if (allowedMessageTypes.includes(messageType)) {
