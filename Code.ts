@@ -5,6 +5,7 @@ interface Config {
     SAVE_AUDIO: boolean;
     SAVE_FILE: boolean;
     SAVE_MESSAGE: boolean;
+    SAVE_LINK: boolean;
     ALLOW_GET_LINK: boolean;
     ALLOW_OVERWRITE: boolean;
     COMMAND_GET_LINK: string;
@@ -111,8 +112,10 @@ function doPost(e: GoogleAppsScript.Events.DoPost): void {
 
             scriptCache.put(event.webhookEventId, "true", 3600);
             processEvent(event);
-        } catch (error) {
+        } catch (err) {
+            const error = err as Error;
             log("Error processing event", error);
+            log("Error processing event data", e.postData.contents);
         }
     }
 }
@@ -129,8 +132,16 @@ function test() {
  * @param chatEvent - The chat event to process.
  */
 function processEvent(chatEvent: ChatEvent) {
-    const messageType = chatEvent.message.type;
     const selectedId = chatEvent.source.groupId ?? chatEvent.source.userId;
+
+    if (chatEvent.type === "message") {
+        handleMessage(chatEvent, selectedId);
+    }
+}
+
+function handleMessage(chatEvent: ChatEvent, selectedId: string) {
+    const messageType = chatEvent.message.type;
+    const messageText = chatEvent.message.text;
     const saveTypes = {
         image: getConfigValue("SAVE_IMAGE", selectedId),
         audio: getConfigValue("SAVE_AUDIO", selectedId),
@@ -140,13 +151,11 @@ function processEvent(chatEvent: ChatEvent) {
     const allowedMessageTypes = Object.entries(saveTypes)
         .filter(([_, shouldSave]) => shouldSave)
         .map(([type]) => type);
-
-    const messageText = chatEvent.message.text;
-
     if (allowedMessageTypes.includes(messageType)) {
         saveFile(chatEvent);
     } else if (messageType === "text" && messageText) {
         handleCommandMessages(chatEvent, messageText, selectedId);
+        logMessage(chatEvent);
     }
 }
 
@@ -193,9 +202,6 @@ function handleCommandMessages(
         getConfigValue("ALLOW_OVERWRITE", selectedId)
     ) {
         setConfigFromMessage(chatEvent, messageText, selectedId);
-    }
-    if (getConfigValue("SAVE_MESSAGE", selectedId)) {
-        logMessage(chatEvent);
     }
 }
 /**
@@ -258,9 +264,12 @@ function logMessage(chatEvent: ChatEvent) {
 
     const userId = chatEvent.source.userId;
     const userDisplayName = getDisplayName(userSheet, userId);
-
-    appendLogData(logSheet, userDisplayName, chatEvent);
-    appendLinks(linkSheet, chatEvent);
+    if (getConfigValue("SAVE_MESSAGE", selectedId)) {
+        appendLogData(logSheet, userDisplayName, chatEvent);
+    }
+    if (getConfigValue("SAVE_LINK", selectedId)) {
+        appendLinks(linkSheet, userDisplayName, chatEvent);
+    }
 }
 
 /**
@@ -296,7 +305,10 @@ function ensureUserSheetIsPopulated(userSheet, userId: string) {
  * @param userId - The user ID to look up.
  * @returns The display name of the user.
  */
-function getDisplayName(userSheet, userId: string): string {
+function getDisplayName(
+    userSheet: GoogleAppsScript.Spreadsheet.Sheet,
+    userId: string
+): string {
     let displayName = "";
     for (let i = 1; i <= userSheet.getLastRow(); i++) {
         if (userSheet.getRange(i, 1).getValue() === userId) {
@@ -313,7 +325,11 @@ function getDisplayName(userSheet, userId: string): string {
  * @param displayName - The display name of the user.
  * @param message - The message data to log.
  */
-function appendLogData(logSheet, displayName: string, chatEvent: ChatEvent) {
+function appendLogData(
+    logSheet: GoogleAppsScript.Spreadsheet.Sheet,
+    displayName: string,
+    chatEvent: ChatEvent
+) {
     logSheet.appendRow([
         new Date(chatEvent.timestamp * 1000),
         displayName,
@@ -328,12 +344,16 @@ function appendLogData(logSheet, displayName: string, chatEvent: ChatEvent) {
  * @param linkSheet - The link sheet to append data to.
  * @param message - The message containing the text with links.
  */
-function appendLinks(linkSheet, chatEvent: ChatEvent) {
-    const extractedLinks = extractLinksFromString(chatEvent.message.text);
+function appendLinks(
+    linkSheet: GoogleAppsScript.Spreadsheet.Sheet,
+    userDisplayName: string,
+    chatEvent: ChatEvent
+) {
+    const extractedLinks = extractLinksFromString(chatEvent.message.text ?? "");
     extractedLinks.forEach((link) => {
         linkSheet.appendRow([
             new Date(chatEvent.timestamp * 1000),
-            chatEvent.message.text,
+            userDisplayName,
             chatEvent.message.id,
             link,
         ]);
@@ -354,7 +374,14 @@ function getSelectedFolder(selectedId: string) {
     return createFolderIfNotExists(selectedId, getCurrentFolder().getId());
 }
 
+/**
+ * Saves a file uploaded via a chat event to the appropriate folder in Google Drive.
+ * The file is renamed based on predefined naming patterns and additional metadata.
+ *
+ * @param {ChatEvent} chatEvent - The chat event object containing details about the file upload.
+ */
 function saveFile(chatEvent: ChatEvent) {
+    // Extract relevant data from the chat event
     const groupId = chatEvent.source.groupId;
     const userId = chatEvent.source.userId;
     const groupFolder = getSelectedFolder(groupId ?? userId);
@@ -366,21 +393,49 @@ function saveFile(chatEvent: ChatEvent) {
     const messageId = chatEvent.message.id;
     const fileName = chatEvent.message.fileName;
     const timestamp = chatEvent.timestamp;
+    const webhookEventId = chatEvent.webhookEventId;
+
+    // Convert the timestamp to a Date object
+    const eventDate = new Date(timestamp * 1000);
+
     const file = fetchFile(messageId);
     const extension = file.getBlob().getContentType().split("/")[1];
-    // replace file name pattern
-    function replaceFileName(fileNamePattern) {
+
+    /**
+     * Formats a Date object into a string with the format YYYYMMDDHHMMSS.
+     * @param {Date} date - The date to format.
+     * @returns {string} The formatted date string.
+     */
+    function formatDateTime(date: Date) {
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, "0"); // Months are 0-based
+        const day = String(date.getDate()).padStart(2, "0");
+        const hours = String(date.getHours()).padStart(2, "0");
+        const minutes = String(date.getMinutes()).padStart(2, "0");
+        const seconds = String(date.getSeconds()).padStart(2, "0");
+
+        return `${year}${month}${day}${hours}${minutes}${seconds}`;
+    }
+
+    /**
+     * Replaces placeholders in a file name pattern with corresponding values.
+     * @param {string} fileNamePattern - The pattern to replace placeholders in.
+     * @returns {string} The updated file name with placeholders replaced.
+     */
+    function replaceFileName(fileNamePattern: string) {
         const replaceValue = {
             "${userId}": userId,
             "${groupId}": groupId,
             "${messageId}": messageId,
-            "${fileName}": fileName,
+            "${fileName}": fileName ?? "",
             "${timestamp}": timestamp,
             "${extension}": extension,
+            "${webhookEventId}": webhookEventId,
+            "${eventDate}": formatDateTime(eventDate),
         };
         let newFileName = fileNamePattern;
         for (const [key, value] of Object.entries(replaceValue)) {
-            newFileName = newFileName.replace(key, value);
+            newFileName = newFileName.replace(key, value.toString());
         }
         return newFileName;
     }
@@ -403,7 +458,7 @@ function saveFile(chatEvent: ChatEvent) {
     const newFileName = newFileNames[messageType] ?? fileName;
     log(
         `Save ${messageType}`,
-        `${userId} save ${messageType} to ${
+        `${userId} saved ${messageType} to ${
             groupId ?? userId
         }/${typeFolder}/${newFileName}`
     );
@@ -549,15 +604,16 @@ function defaultConfig(): Config {
         SAVE_AUDIO: true,
         SAVE_FILE: true,
         SAVE_MESSAGE: true,
+        SAVE_LINK: true,
         ALLOW_GET_LINK: true,
         ALLOW_OVERWRITE: true,
         COMMAND_GET_LINK: "!link",
         COMMAND_GET_GROUP_ID: "!group",
         COMMAND_GET_USER_ID: "!user",
         COMMAND_PREFIX_SET_COMMANDS: "!set",
-        IMAGE_NAME_FORMAT: "${timestamp}.${extension}",
-        VIDEO_NAME_FORMAT: "${timestamp}.${extension}",
-        AUDIO_NAME_FORMAT: "${timestamp}.${extension}",
+        IMAGE_NAME_FORMAT: "${timestamp}_${messageId}.${extension}",
+        VIDEO_NAME_FORMAT: "${timestamp}_${messageId}.${extension}",
+        AUDIO_NAME_FORMAT: "${timestamp}_${messageId}.${extension}",
         FILE_NAME_FORMAT: "${timestamp}_${fileName}",
         COMMAND_GET_CONFIG: "!config",
     };
@@ -605,8 +661,7 @@ function setGroupConfig(key, selectedId, value) {
 }
 function convertValue(value) {
     if (typeof value === "string") {
-        value = value.trim();
-        const lowerValue = value.toLowerCase();
+        const lowerValue = value.trim().toLowerCase();
         const converter = {
             true: true,
             false: false,
@@ -627,7 +682,7 @@ function convertValue(value) {
     return value.trim();
 }
 
-function getLineUser(userId) {
+function getLineUser(userId: string) {
     if (lineUser) {
         return lineUser;
     }
@@ -641,7 +696,7 @@ function getLineUser(userId) {
     lineUser = JSON.parse(response.getContentText());
     return lineUser;
 }
-function extractLinksFromString(text) {
+function extractLinksFromString(text: string) {
     const regex = /(https?:\/\/[^\s]+)/g;
     const matches = text.match(regex);
     if (matches) {
