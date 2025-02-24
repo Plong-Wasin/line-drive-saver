@@ -55,8 +55,9 @@ export interface ContentProvider {
 }
 
 export interface Source {
-    type: string;
-    groupId: string;
+    type: "user" | "group" | "room";
+    groupId?: string;
+    roomId?: string;
     userId: string;
 }
 
@@ -266,7 +267,8 @@ function logMessage(chatEvent: ChatEvent) {
     ensureUserSheetIsPopulated(
         userSheet,
         chatEvent.source.userId,
-        chatEvent.source.groupId
+        chatEvent.source.groupId,
+        chatEvent.source.roomId
     );
 
     const userId = chatEvent.source.userId;
@@ -284,11 +286,13 @@ function logMessage(chatEvent: ChatEvent) {
  * @param userSheet - The user sheet to check.
  * @param userId - The user ID to check.
  * @param groupId - The group ID to check.
+ * @param roomId - The room ID to check.
  */
 function ensureUserSheetIsPopulated(
     userSheet,
     userId: string,
-    groupId?: string
+    groupId?: string|null,
+    roomId?: string|null
 ) {
     if (!userSheet.getRange(1, 1).getValue()) {
         userSheet.appendRow([
@@ -301,9 +305,14 @@ function ensureUserSheetIsPopulated(
 
     const displayName = getDisplayName(userSheet, userId);
     if (!displayName) {
-        const lineUser = groupId
-            ? getUserProfileFromGroup(groupId, userId)
-            : getLineUser(userId);
+        let lineUser: LineUser|null = null;
+        if(groupId) {
+            lineUser = getUserProfileFromGroup(groupId, userId)
+        }else if(roomId){
+            lineUser = getUserProfileFromRoom(roomId, userId)
+        }else{
+            lineUser = getLineUser(userId);
+        }
         userSheet.appendRow([
             lineUser.userId,
             lineUser.displayName,
@@ -396,7 +405,7 @@ function getSelectedFolder(selectedId: string) {
  */
 function saveFile(chatEvent: ChatEvent) {
     // Extract relevant data from the chat event
-    const groupId = chatEvent.source.groupId;
+    const groupId = chatEvent.source.groupId ?? chatEvent.source.roomId;
     const userId = chatEvent.source.userId;
     const groupFolder = getSelectedFolder(groupId ?? userId);
     const messageType = chatEvent.message.type;
@@ -449,7 +458,9 @@ function saveFile(chatEvent: ChatEvent) {
         };
         let newFileName = fileNamePattern;
         for (const [key, value] of Object.entries(replaceValue)) {
-            newFileName = newFileName.replace(key, value.toString());
+            if(value){
+                newFileName = newFileName.replace(key, value.toString());
+            }
         }
         return newFileName;
     }
@@ -483,6 +494,7 @@ function saveFile(chatEvent: ChatEvent) {
 function getLink(chatEvent: ChatEvent) {
     const userId = chatEvent.source.userId;
     const groupId = chatEvent.source.groupId;
+    const roomId = chatEvent.source.roomId;
     const selectedId = groupId ?? userId;
     const replyToken = chatEvent.replyToken;
     const isGroupFolderExists = getCurrentFolder()
@@ -490,7 +502,7 @@ function getLink(chatEvent: ChatEvent) {
         .hasNext();
     if (isGroupFolderExists) {
         const groupFolder = getCurrentFolder()
-            .getFoldersByName(groupId ?? userId)
+            .getFoldersByName(groupId ?? roomId ?? userId)
             .next();
         setFolderAccessToAnyone(groupFolder.getId());
         log("Get link", `${userId} Get link ${selectedId}`);
@@ -696,7 +708,7 @@ function convertValue(value) {
     return value.trim();
 }
 
-function getLineUser(userId: string) {
+function getLineUser(userId: string): LineUser {
     const cacheKey = `lineUser_${userId}`;
     if (scriptCache.get(cacheKey)) {
         return JSON.parse(scriptCache.get(cacheKey) ?? "{}");
@@ -734,6 +746,30 @@ function getUserProfileFromGroup(groupId: string, userId: string): LineUser {
     scriptCache.put(cacheKey, response.getContentText());
     return JSON.parse(response.getContentText());
 }
+
+/**
+ * Fetches the LINE user profile from a specific room using the room ID and user ID.
+ *
+ * @param roomId - The ID of the LINE room.
+ * @param userId - The ID of the LINE user to fetch.
+ * @returns An object representing the LINE user's profile.
+ */
+function getUserProfileFromRoom(roomId: string, userId: string): LineUser {
+    const cacheKey = `lineUser_${roomId}_${userId}`;
+    if (scriptCache.get(cacheKey)) {
+        return JSON.parse(scriptCache.get(cacheKey) ?? "{}");
+    }
+    const url = `https://api.line.me/v2/bot/room/${roomId}/member/${userId}`;
+    const opt = {
+        headers: {
+            Authorization: `Bearer ${LINE_CHANNEL_ACCESS_TOKEN}`,
+        },
+    };
+    const response = UrlFetchApp.fetch(url, opt);
+    scriptCache.put(cacheKey, response.getContentText());
+    return JSON.parse(response.getContentText());
+}
+
 function extractLinksFromString(text: string) {
     const regex = /(https?:\/\/[^\s]+)/g;
     const matches = text.match(regex);
